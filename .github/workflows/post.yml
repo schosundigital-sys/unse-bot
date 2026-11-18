@@ -33,22 +33,22 @@ concurrency:
 
 jobs:
   post:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
       TZ: Asia/Seoul
       FONT_SANS: https://raw.githubusercontent.com/google/fonts/b38c5c93af322c45f633e17ac440ec1e6c94d489/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf
       FONT_SERIF: https://raw.githubusercontent.com/google/fonts/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notoserifkr/NotoSerifKR%5Bwght%5D.ttf
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
 
       - name: 폰트 캐시
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: fonts
           key: fonts-noto-kr-v1
@@ -116,7 +116,7 @@ jobs:
 
       - name: 미리보기 이미지 보관
         if: steps.done.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cards-${{ steps.slot.outputs.slot }}
           path: ${{ steps.build.outputs.out }}
