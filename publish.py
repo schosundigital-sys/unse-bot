@@ -4,9 +4,9 @@
   예) python publish.py out/2026-11-19/evening https://raw.githubusercontent.com/OWNER/REPO/SHA/
 
 필요한 환경변수
-  IG_USER_ID       인스타그램 비즈니스 계정 ID
-  IG_ACCESS_TOKEN  접근 토큰
-  GRAPH_HOST       (선택) 기본 graph.instagram.com  /  페이스북 로그인 방식이면 graph.facebook.com
+  IG_USER_ID       (선택) 없으면 토큰으로 @unse_official 계정 ID를 자동 조회
+  IG_ACCESS_TOKEN  시스템 사용자 토큰 (만료 없음)
+  GRAPH_HOST       (선택) 기본 graph.facebook.com
   GRAPH_VERSION    (선택) 기본 v21.0
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ ROOT = Path(__file__).parent
 
 
 def _base() -> str:
-    return f"https://{os.getenv('GRAPH_HOST', 'graph.instagram.com')}/{os.getenv('GRAPH_VERSION', 'v21.0')}"
+    return f"https://{os.getenv('GRAPH_HOST') or 'graph.facebook.com'}/{os.getenv('GRAPH_VERSION', 'v21.0')}"
 
 
 def _post(path: str, **data) -> dict:
@@ -51,8 +51,26 @@ def _wait(container_id: str, timeout: int = 300) -> None:
     raise TimeoutError(f"컨테이너 {container_id} 처리 시간 초과")
 
 
+def find_ig_user_id(username: str = "unse_official") -> str:
+    """IG_USER_ID가 없으면 토큰으로 연결된 페이지에서 인스타 계정 ID를 찾습니다."""
+    r = requests.get(
+        f"{_base()}/me/accounts",
+        params={"fields": "name,instagram_business_account{id,username}",
+                "access_token": os.environ["IG_ACCESS_TOKEN"]},
+        timeout=30,
+    ).json()
+    if "error" in r:
+        raise RuntimeError(f"계정 조회 실패: {r['error'].get('message')}")
+    found = [p["instagram_business_account"] for p in r.get("data", []) if p.get("instagram_business_account")]
+    for a in found:
+        if a.get("username") == username:
+            return a["id"]
+    raise RuntimeError(f"@{username} 계정을 찾지 못했습니다. 토큰에 연결된 계정: {[a.get('username') for a in found]}")
+
+
 def publish_carousel(image_urls: list[str], caption: str) -> str:
-    uid = os.environ["IG_USER_ID"]
+    uid = os.getenv("IG_USER_ID") or find_ig_user_id()
+    print("  인스타 계정 ID:", uid)
     children = []
     for u in image_urls:
         cid = _post(f"{uid}/media", image_url=u, is_carousel_item="true")["id"]

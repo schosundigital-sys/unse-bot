@@ -15,14 +15,12 @@ GitHub Actions에서 돌아가므로 PC가 꺼져 있어도 동작하며, 모든
 - `main.py` 카드 생성 실행
 - `publish.py` Instagram Graph API 캐러셀 게시
 - `.github/workflows/post.yml` 하루 2회 예약 실행
-- `.github/workflows/refresh-token.yml` 인스타 토큰 매주 자동 갱신
 
 ## 필요한 Secrets (Settings → Secrets and variables → Actions)
 | 이름 | 내용 |
 |---|---|
-| `IG_USER_ID` | 인스타그램 계정 ID (Meta 앱 대시보드에서 확인) |
-| `IG_ACCESS_TOKEN` | Instagram API 접근 토큰 |
-| `GH_PAT` | 이 저장소의 Secrets 쓰기 권한을 가진 Fine-grained 토큰 (토큰 자동 갱신용) |
+| `IG_ACCESS_TOKEN` | 비즈니스 설정 → 시스템 사용자에서 발급한 토큰 (만료 없음) |
+| `IG_USER_ID` | (선택) 비워 두면 토큰으로 @unse_official 계정 ID를 자동으로 찾습니다 |
 
 ## 테스트
 Actions → "운세 카드 게시" → Run workflow
