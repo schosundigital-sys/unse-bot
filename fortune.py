@@ -50,11 +50,22 @@ def parse(page: str) -> list[Zodiac]:
     return out
 
 
-def fetch(d: date) -> list[Zodiac]:
-    r = requests.get(URL.format(d=d.isoformat()), headers={"User-Agent": UA}, timeout=30)
-    r.raise_for_status()
-    page = r.content.decode("utf-8", "ignore")
-    return parse(page)
+def fetch(d: date, tries: int = 4) -> list[Zodiac]:
+    """일시적인 접속 오류에 대비해 최대 4번(30초·60초·90초 간격) 재시도."""
+    import time
+
+    last = None
+    for i in range(tries):
+        try:
+            r = requests.get(URL.format(d=d.isoformat()), headers={"User-Agent": UA}, timeout=30)
+            r.raise_for_status()
+            return parse(r.content.decode("utf-8", "ignore"))
+        except Exception as e:  # 네트워크 오류·구조 변경 모두 재시도 후 실패 처리
+            last = e
+            print(f"운세 페이지 가져오기 실패({i + 1}/{tries}): {e}")
+            if i < tries - 1:
+                time.sleep(30 * (i + 1))
+    raise RuntimeError(f"운세 페이지를 가져오지 못했습니다: {last}")
 
 
 if __name__ == "__main__":
