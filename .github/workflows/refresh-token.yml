@@ -1,0 +1,23 @@
+name: 인스타 토큰 자동 갱신
+
+# 인스타그램 토큰은 60일마다 만료되므로 매주 월요일에 새 토큰으로 바꿔 둡니다.
+# 필요한 Secret: IG_ACCESS_TOKEN, GH_PAT (이 저장소 Secrets 쓰기 권한이 있는 토큰)
+on:
+  schedule:
+    - cron: "0 1 * * 1"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 토큰 갱신
+        env:
+          OLD: ${{ secrets.IG_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          NEW=$(curl -sf "https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=${OLD}" | jq -r '.access_token // empty')
+          if [ -z "$NEW" ]; then echo "갱신 실패 - 토큰을 새로 발급해 주세요"; exit 1; fi
+          echo "::add-mask::$NEW"
+          gh secret set IG_ACCESS_TOKEN --body "$NEW" --repo "${{ github.repository }}"
+          echo "토큰 갱신 완료"

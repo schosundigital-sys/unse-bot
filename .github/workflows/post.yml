@@ -1,0 +1,115 @@
+name: 운세 카드 게시
+
+on:
+  schedule:
+    # GitHub 예약 실행은 늦어질 수 있어 미리 시작하고, 정각까지 기다렸다가 게시합니다. (cron은 UTC)
+    - cron: "30 21 * * *"   # 06:30 KST 시작 → 07:00 오늘의 운세(출생연도별)
+    - cron: "0 8 * * *"     # 17:00 KST 시작 → 17:30 내일의 운세(띠별)
+  workflow_dispatch:
+    inputs:
+      slot:
+        description: "게시할 슬롯"
+        type: choice
+        options: [morning, evening]
+        default: morning
+      publish:
+        description: "인스타그램에 실제로 게시"
+        type: boolean
+        default: false
+      force:
+        description: "이미 게시된 슬롯이어도 다시 게시"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: post-fortune
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      TZ: Asia/Seoul
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 패키지·폰트 설치
+        run: |
+          pip install -r requirements.txt
+          mkdir -p fonts
+          curl -sfL -o fonts/NotoSansKR-VF.ttf  "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf"
+          curl -sfL -o fonts/NotoSerifKR-VF.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/notoserifkr/NotoSerifKR%5Bwght%5D.ttf"
+
+      - name: 슬롯 결정
+        id: slot
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "slot=${{ inputs.slot }}" >> "$GITHUB_OUTPUT"
+            echo "publish=${{ inputs.publish }}" >> "$GITHUB_OUTPUT"
+            echo "wait=" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "30 21 * * *" ]; then
+            echo "slot=morning" >> "$GITHUB_OUTPUT"; echo "publish=true" >> "$GITHUB_OUTPUT"; echo "wait=07:00" >> "$GITHUB_OUTPUT"
+          else
+            echo "slot=evening" >> "$GITHUB_OUTPUT"; echo "publish=true" >> "$GITHUB_OUTPUT"; echo "wait=17:30" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 카드 생성
+        id: build
+        run: python main.py "${{ steps.slot.outputs.slot }}"
+
+      - name: 이미지 공개 URL 준비 (cdn 브랜치)
+        id: cdn
+        run: |
+          OUT="${{ steps.build.outputs.out }}"
+          rm -rf /tmp/cdn && mkdir -p "/tmp/cdn/$OUT" && cp "$OUT"/* "/tmp/cdn/$OUT/"
+          cd /tmp/cdn
+          git init -q -b cdn
+          git -c user.name="unse-bot" -c user.email="unse-bot@users.noreply.github.com" add .
+          git -c user.name="unse-bot" -c user.email="unse-bot@users.noreply.github.com" commit -qm "cards $OUT"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" cdn
+          echo "base=https://raw.githubusercontent.com/${{ github.repository }}/$(git rev-parse HEAD)/" >> "$GITHUB_OUTPUT"
+
+      - name: 미리보기 이미지 보관
+        uses: actions/upload-artifact@v4
+        with:
+          name: cards-${{ steps.slot.outputs.slot }}
+          path: ${{ steps.build.outputs.out }}
+          retention-days: 14
+
+      - name: 게시 시각까지 대기
+        if: steps.slot.outputs.wait != '' && steps.slot.outputs.publish == 'true'
+        run: |
+          python - <<'EOF'
+          import time, datetime as dt
+          now = dt.datetime.now()
+          h, m = map(int, "${{ steps.slot.outputs.wait }}".split(":"))
+          target = now.replace(hour=h, minute=m, second=0, microsecond=0)
+          sec = (target - now).total_seconds()
+          print(f"현재 {now:%H:%M:%S}, {max(0, int(sec))}초 대기")
+          if 0 < sec < 3 * 3600:
+              time.sleep(sec)
+          EOF
+
+      - name: 인스타그램 게시
+        if: steps.slot.outputs.publish == 'true'
+        env:
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          GRAPH_HOST: ${{ vars.GRAPH_HOST || 'graph.instagram.com' }}
+        run: python publish.py "${{ steps.build.outputs.out }}" "${{ steps.cdn.outputs.base }}" ${{ inputs.force && '--force' || '' }}
+
+      - name: 게시 기록 저장 (중복 방지)
+        if: steps.slot.outputs.publish == 'true'
+        run: |
+          git config user.name "unse-bot"
+          git config user.email "unse-bot@users.noreply.github.com"
+          git add posted
+          git diff --cached --quiet || (git commit -qm "posted ${{ steps.build.outputs.out }}" && git push -q)
