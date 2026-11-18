@@ -2,9 +2,12 @@ name: 운세 카드 게시
 
 on:
   schedule:
-    # GitHub 예약 실행은 늦어질 수 있어 미리 시작하고, 정각까지 기다렸다가 게시합니다. (cron은 UTC)
+    # cron은 UTC 기준. 예약 실행은 늦어질 수 있어 30분 먼저 시작해 정각까지 기다렸다가 게시합니다.
     - cron: "30 21 * * *"   # 06:30 KST 시작 → 07:00 오늘의 운세(출생연도별)
     - cron: "0 8 * * *"     # 17:00 KST 시작 → 17:30 내일의 운세(띠별)
+    # 백업 실행: 위 실행이 실패·누락됐을 때만 게시 (이미 게시됐으면 바로 종료)
+    - cron: "10 23 * * *"   # 08:10 KST 오늘의 운세 백업
+    - cron: "40 9 * * *"    # 18:40 KST 내일의 운세 백업
   workflow_dispatch:
     inputs:
       slot:
@@ -34,39 +37,62 @@ jobs:
     timeout-minutes: 90
     env:
       TZ: Asia/Seoul
+      FONT_SANS: https://raw.githubusercontent.com/google/fonts/b38c5c93af322c45f633e17ac440ec1e6c94d489/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf
+      FONT_SERIF: https://raw.githubusercontent.com/google/fonts/8b0a1d0f5983c89bc2b93f1b5fb55f9e252744b5/ofl/notoserifkr/NotoSerifKR%5Bwght%5D.ttf
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+
+      - name: 폰트 캐시
+        uses: actions/cache@v4
+        with:
+          path: fonts
+          key: fonts-noto-kr-v1
 
       - name: 패키지·폰트 설치
         run: |
           pip install -r requirements.txt
           mkdir -p fonts
-          curl -sfL -o fonts/NotoSansKR-VF.ttf  "https://raw.githubusercontent.com/google/fonts/main/ofl/notosanskr/NotoSansKR%5Bwght%5D.ttf"
-          curl -sfL -o fonts/NotoSerifKR-VF.ttf "https://raw.githubusercontent.com/google/fonts/main/ofl/notoserifkr/NotoSerifKR%5Bwght%5D.ttf"
+          [ -s fonts/NotoSansKR-VF.ttf ]  || curl -sfL --retry 5 --retry-delay 10 -o fonts/NotoSansKR-VF.ttf  "$FONT_SANS"
+          [ -s fonts/NotoSerifKR-VF.ttf ] || curl -sfL --retry 5 --retry-delay 10 -o fonts/NotoSerifKR-VF.ttf "$FONT_SERIF"
 
       - name: 슬롯 결정
         id: slot
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "slot=${{ inputs.slot }}" >> "$GITHUB_OUTPUT"
-            echo "publish=${{ inputs.publish }}" >> "$GITHUB_OUTPUT"
-            echo "wait=" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event.schedule }}" = "30 21 * * *" ]; then
-            echo "slot=morning" >> "$GITHUB_OUTPUT"; echo "publish=true" >> "$GITHUB_OUTPUT"; echo "wait=07:00" >> "$GITHUB_OUTPUT"
+          case "${{ github.event.schedule }}" in
+            "30 21 * * *") echo "slot=morning" >> "$GITHUB_OUTPUT"; echo "publish=true" >> "$GITHUB_OUTPUT"; echo "wait=07:00" >> "$GITHUB_OUTPUT" ;;
+            "0 8 * * *")   echo "slot=evening" >> "$GITHUB_OUTPUT"; echo "publish=true" >> "$GITHUB_OUTPUT"; echo "wait=17:30" >> "$GITHUB_OUTPUT" ;;
+            "10 23 * * *") echo "slot=morning" >> "$GITHUB_OUTPUT"; echo "publish=true" >> "$GITHUB_OUTPUT"; echo "wait=" >> "$GITHUB_OUTPUT" ;;
+            "40 9 * * *")  echo "slot=evening" >> "$GITHUB_OUTPUT"; echo "publish=true" >> "$GITHUB_OUTPUT"; echo "wait=" >> "$GITHUB_OUTPUT" ;;
+            *)             echo "slot=${{ inputs.slot }}" >> "$GITHUB_OUTPUT"; echo "publish=${{ inputs.publish }}" >> "$GITHUB_OUTPUT"; echo "wait=" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: 이미 게시됐는지 확인
+        id: done
+        run: |
+          base=$(python -c "import datetime as d; print(d.date.today().isoformat())")
+          if [ "${{ steps.slot.outputs.slot }}" = "evening" ]; then
+            base=$(python -c "import datetime as d; print((d.date.today()+d.timedelta(days=1)).isoformat())")
+          fi
+          if [ -f "posted/${base}-${{ steps.slot.outputs.slot }}.json" ] && [ "${{ inputs.force }}" != "true" ]; then
+            echo "이미 게시됨: ${base} ${{ steps.slot.outputs.slot }} – 종료합니다."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           else
-            echo "slot=evening" >> "$GITHUB_OUTPUT"; echo "publish=true" >> "$GITHUB_OUTPUT"; echo "wait=17:30" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 카드 생성
         id: build
+        if: steps.done.outputs.skip != 'true'
         run: python main.py "${{ steps.slot.outputs.slot }}"
 
       - name: 이미지 공개 URL 준비 (cdn 브랜치)
         id: cdn
+        if: steps.done.outputs.skip != 'true'
         run: |
           OUT="${{ steps.build.outputs.out }}"
           rm -rf /tmp/cdn && mkdir -p "/tmp/cdn/$OUT" && cp "$OUT"/* "/tmp/cdn/$OUT/"
@@ -74,18 +100,39 @@ jobs:
           git init -q -b cdn
           git -c user.name="unse-bot" -c user.email="unse-bot@users.noreply.github.com" add .
           git -c user.name="unse-bot" -c user.email="unse-bot@users.noreply.github.com" commit -qm "cards $OUT"
-          git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" cdn
-          echo "base=https://raw.githubusercontent.com/${{ github.repository }}/$(git rev-parse HEAD)/" >> "$GITHUB_OUTPUT"
+          for i in 1 2 3; do
+            git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" cdn && break
+            sleep 15
+          done
+          SHA=$(git rev-parse HEAD)
+          BASE="https://raw.githubusercontent.com/${{ github.repository }}/$SHA/"
+          # 인스타가 가져가기 전에 이미지가 실제로 열리는지 확인
+          for i in $(seq 1 12); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "${BASE}${OUT}/01.jpg")
+            [ "$code" = "200" ] && break
+            echo "이미지 주소 대기 중($code)"; sleep 10
+          done
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
 
       - name: 미리보기 이미지 보관
+        if: steps.done.outputs.skip != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: cards-${{ steps.slot.outputs.slot }}
           path: ${{ steps.build.outputs.out }}
           retention-days: 14
 
+      - name: 토큰 확인 (게시 없는 테스트 실행)
+        if: steps.done.outputs.skip != 'true' && steps.slot.outputs.publish != 'true'
+        env:
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          GRAPH_HOST: ${{ vars.GRAPH_HOST }}
+          GRAPH_VERSION: ${{ vars.GRAPH_VERSION }}
+        run: python publish.py --check
+
       - name: 게시 시각까지 대기
-        if: steps.slot.outputs.wait != '' && steps.slot.outputs.publish == 'true'
+        if: steps.done.outputs.skip != 'true' && steps.slot.outputs.wait != '' && steps.slot.outputs.publish == 'true'
         run: |
           python - <<'EOF'
           import time, datetime as dt
@@ -99,17 +146,24 @@ jobs:
           EOF
 
       - name: 인스타그램 게시
-        if: steps.slot.outputs.publish == 'true'
+        if: steps.done.outputs.skip != 'true' && steps.slot.outputs.publish == 'true'
         env:
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
           GRAPH_HOST: ${{ vars.GRAPH_HOST }}
+          GRAPH_VERSION: ${{ vars.GRAPH_VERSION }}
         run: python publish.py "${{ steps.build.outputs.out }}" "${{ steps.cdn.outputs.base }}" ${{ inputs.force && '--force' || '' }}
 
       - name: 게시 기록 저장 (중복 방지)
-        if: steps.slot.outputs.publish == 'true'
+        if: steps.done.outputs.skip != 'true' && steps.slot.outputs.publish == 'true'
         run: |
           git config user.name "unse-bot"
           git config user.email "unse-bot@users.noreply.github.com"
           git add posted
-          git diff --cached --quiet || (git commit -qm "posted ${{ steps.build.outputs.out }}" && git push -q)
+          git diff --cached --quiet && exit 0
+          git commit -qm "posted ${{ steps.build.outputs.out }}"
+          for i in 1 2 3 4 5; do
+            git pull -q --rebase origin main && git push -q && exit 0
+            sleep 10
+          done
+          echo "게시 기록 저장 실패" && exit 1
