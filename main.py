@@ -22,6 +22,7 @@ ROOT = Path(__file__).parent
 
 def build(slot_name: str, base: date) -> tuple[list[Path], str, date]:
     slot = config.SLOTS[slot_name]
+    render.set_theme(slot.get("theme", "hanji"))
     d = base + timedelta(days=slot["day_offset"])
     zs = fortune.fetch(d)
     picked = [zs[i] for i in slot["zodiacs"]]
