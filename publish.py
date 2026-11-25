@@ -1,6 +1,7 @@
-"""인스타그램 캐러셀(카드뉴스) 게시 – Instagram Graph API (무료).
+"""인스타그램 캐러셀(카드뉴스)·릴스 게시 – Instagram Graph API (무료).
 
 사용법: python publish.py <카드 폴더> <이미지 공개 URL 접두어>
+        python publish.py --reel out/<날짜>/reel <공개 URL 접두어>   (릴스)
   예) python publish.py out/2026-11-19/evening https://raw.githubusercontent.com/OWNER/REPO/SHA/
 
 필요한 환경변수
@@ -108,7 +109,11 @@ def publish_carousel(image_urls: list[str], caption: str) -> str:
                 raise
             time.sleep(60)
 
-    # 2) 게시 – 응답이 끊겨도 실제로 게시됐는지 확인한 뒤에만 다시 시도 (중복 게시 방지)
+    return _publish(uid, parent)
+
+
+def _publish(uid: str, parent: str) -> str:
+    """게시 – 응답이 끊겨도 실제로 게시됐는지 확인한 뒤에만 다시 시도 (중복 게시 방지)."""
     for attempt in range(3):
         try:
             return _call("POST", f"{uid}/media_publish", tries=1, creation_id=parent)["id"]
@@ -128,14 +133,55 @@ def publish_carousel(image_urls: list[str], caption: str) -> str:
                 raise
 
 
+def video_urls(base_url: str, path: str) -> list[str]:
+    """영상 주소 후보: jsDelivr(영상 형식 헤더가 정확함) → raw.githubusercontent 순서."""
+    urls = []
+    if base_url.startswith("https://raw.githubusercontent.com/"):
+        owner, repo, sha = base_url.split("/")[3:6]
+        urls.append(f"https://cdn.jsdelivr.net/gh/{owner}/{repo}@{sha}/{path}")
+    urls.append(base_url + path)
+    return urls
+
+
+def publish_reel(video_urls_: list[str], caption: str, cover_url: str | None = None) -> str:
+    uid = os.getenv("IG_USER_ID") or find_ig_user_id()
+    print("  인스타 계정 ID:", uid)
+    parent, last = None, None
+    for url in video_urls_:
+        for attempt in range(2):
+            try:
+                data = dict(media_type="REELS", video_url=url, caption=caption, share_to_feed="true")
+                if cover_url:
+                    data["cover_url"] = cover_url
+                parent = _call("POST", f"{uid}/media", **data)["id"]
+                print("  릴스 업로드:", url, parent)
+                _wait(parent, timeout=900)  # 영상은 처리에 1~5분 걸림
+                break
+            except AuthError:
+                raise
+            except Exception as e:
+                last = e
+                parent = None
+                print(f"  릴스 컨테이너 실패({url}, {attempt + 1}/2): {e}")
+                time.sleep(30)
+        if parent:
+            break
+    if not parent:
+        raise RuntimeError(f"릴스 영상 처리 실패: {last}")
+    return _publish(uid, parent)
+
+
 def main() -> None:
     if sys.argv[1:] == ["--check"]:  # 게시 없이 토큰·계정 연결만 확인
         uid = os.getenv("IG_USER_ID") or find_ig_user_id()
         info = _call("GET", uid, fields="username,media_count")
         print(f"토큰 정상 – @{info.get('username')} (게시물 {info.get('media_count')}개)")
         return
-    folder, base_url = Path(sys.argv[1]), sys.argv[2].rstrip("/") + "/"
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
     force = "--force" in sys.argv
+    folder, base_url = Path(args[0]), args[1].rstrip("/") + "/"
+    if "--reel" in sys.argv:
+        return main_reel(folder, base_url, force)
     date_s, slot = folder.parts[-2], folder.parts[-1]
     marker = ROOT / "posted" / f"{date_s}-{slot}.json"
     if marker.exists() and not force:
@@ -151,6 +197,23 @@ def main() -> None:
     marker.parent.mkdir(exist_ok=True)
     marker.write_text(json.dumps({"date": date_s, "slot": slot, "media_id": media_id}), encoding="utf-8")
     print("게시 완료 media_id =", media_id)
+
+
+def main_reel(folder: Path, base_url: str, force: bool) -> None:
+    """python publish.py --reel out/<날짜>/reel <공개 URL 접두어>"""
+    date_s = folder.parts[-2]
+    marker = ROOT / "posted" / f"{date_s}-reel.json"
+    if marker.exists() and not force:
+        print(f"이미 게시됨({marker.name}) – 중복 게시 방지로 건너뜁니다.")
+        return
+    caption = (folder / "caption.txt").read_text(encoding="utf-8")
+    cover = folder / "cover.jpg"
+    cover_url = base_url + cover.as_posix() if cover.exists() else None
+    print(f"[reel] {date_s} 릴스 게시 시작")
+    media_id = publish_reel(video_urls(base_url, (folder / "reel.mp4").as_posix()), caption, cover_url)
+    marker.parent.mkdir(exist_ok=True)
+    marker.write_text(json.dumps({"date": date_s, "slot": "reel", "media_id": media_id}), encoding="utf-8")
+    print("릴스 게시 완료 media_id =", media_id)
 
 
 if __name__ == "__main__":

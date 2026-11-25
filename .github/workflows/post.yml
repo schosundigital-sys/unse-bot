@@ -4,17 +4,17 @@ on:
   schedule:
     # cron은 UTC 기준. 예약 실행이 실제로 40분 이상 늦게 시작되는 경우가 많아
     # 2시간 먼저 시작해 두고 정각까지 기다렸다가 게시합니다.
-    - cron: "0 20 * * *"    # 05:00 KST 시작 → 07:00 오늘의 운세(출생연도별)
+    - cron: "0 20 * * *"    # 05:00 KST 시작 → 07:00 오늘의 운세(출생연도별) + 릴스
     - cron: "30 6 * * *"    # 15:30 KST 시작 → 17:30 내일의 운세(띠별)
     # 백업 실행: 위 실행이 실패·누락됐을 때만 게시 (이미 게시됐으면 바로 종료)
-    - cron: "10 23 * * *"   # 08:10 KST 오늘의 운세 백업
+    - cron: "10 23 * * *"   # 08:10 KST 오늘의 운세·릴스 백업
     - cron: "40 9 * * *"    # 18:40 KST 내일의 운세 백업
   workflow_dispatch:
     inputs:
       slot:
-        description: "게시할 슬롯"
+        description: "게시할 슬롯 (reel = 오늘의 운세 릴스만)"
         type: choice
-        options: [morning, evening]
+        options: [morning, evening, reel]
         default: morning
       publish:
         description: "인스타그램에 실제로 게시"
@@ -75,52 +75,82 @@ jobs:
       - name: 이미 게시됐는지 확인
         id: done
         run: |
-          base=$(python -c "import datetime as d; print(d.date.today().isoformat())")
-          if [ "${{ steps.slot.outputs.slot }}" = "evening" ]; then
-            base=$(python -c "import datetime as d; print((d.date.today()+d.timedelta(days=1)).isoformat())")
+          SLOT="${{ steps.slot.outputs.slot }}"
+          today=$(python -c "import datetime as d; print(d.date.today().isoformat())")
+          tomorrow=$(python -c "import datetime as d; print((d.date.today()+d.timedelta(days=1)).isoformat())")
+          card=true; reel=true   # true = 이미 게시됨(또는 이 슬롯에서 할 일 아님)
+          case "$SLOT" in
+            morning) [ -f "posted/${today}-morning.json" ] || card=false
+                     [ -f "posted/${today}-reel.json" ] || reel=false ;;
+            evening) [ -f "posted/${tomorrow}-evening.json" ] || card=false ;;
+            reel)    [ -f "posted/${today}-reel.json" ] || reel=false ;;
+          esac
+          if [ "${{ inputs.force }}" = "true" ]; then
+            [ "$SLOT" != "reel" ] && card=false
+            [ "$SLOT" != "evening" ] && reel=false
           fi
-          if [ -f "posted/${base}-${{ steps.slot.outputs.slot }}.json" ] && [ "${{ inputs.force }}" != "true" ]; then
-            echo "이미 게시됨: ${base} ${{ steps.slot.outputs.slot }} – 종료합니다."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
+          echo "카드 건너뜀=$card / 릴스 건너뜀=$reel"
+          echo "card_skip=$card" >> "$GITHUB_OUTPUT"
+          echo "reel_skip=$reel" >> "$GITHUB_OUTPUT"
+          if [ "$card" = "true" ] && [ "$reel" = "true" ]; then
+            echo "모두 게시됨 – 종료합니다."; echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: 카드 생성
         id: build
-        if: steps.done.outputs.skip != 'true'
+        if: steps.done.outputs.card_skip != 'true'
         run: python main.py "${{ steps.slot.outputs.slot }}"
 
-      - name: 이미지 공개 URL 준비 (cdn 브랜치)
+      - name: 릴스 생성 (오늘 운 좋은 띠 TOP 3 훅 영상)
+        id: reel
+        if: steps.done.outputs.reel_skip != 'true'
+        continue-on-error: true   # 릴스가 실패해도 카드뉴스는 그대로 게시
+        run: |
+          command -v ffmpeg >/dev/null || (sudo apt-get update -q && sudo apt-get install -y -q ffmpeg)
+          python reel.py
+
+      - name: 이미지·영상 공개 URL 준비 (cdn 브랜치)
         id: cdn
         if: steps.done.outputs.skip != 'true'
         run: |
           OUT="${{ steps.build.outputs.out }}"
-          rm -rf /tmp/cdn && mkdir -p "/tmp/cdn/$OUT" && cp "$OUT"/* "/tmp/cdn/$OUT/"
+          REEL="${{ steps.reel.outputs.reel }}"
+          if [ -z "$OUT$REEL" ]; then echo "올릴 파일이 없습니다."; exit 1; fi
+          rm -rf /tmp/cdn && mkdir -p /tmp/cdn
+          for d in $OUT $REEL; do mkdir -p "/tmp/cdn/$d" && cp "$d"/* "/tmp/cdn/$d/"; done
+          CHECK="$OUT/01.jpg"; [ -n "$OUT" ] || CHECK="$REEL/cover.jpg"
           cd /tmp/cdn
           git init -q -b cdn
           git -c user.name="unse-bot" -c user.email="unse-bot@users.noreply.github.com" add .
-          git -c user.name="unse-bot" -c user.email="unse-bot@users.noreply.github.com" commit -qm "cards $OUT"
+          git -c user.name="unse-bot" -c user.email="unse-bot@users.noreply.github.com" commit -qm "cards $OUT $REEL"
           for i in 1 2 3; do
             git push -qf "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" cdn && break
             sleep 15
           done
           SHA=$(git rev-parse HEAD)
           BASE="https://raw.githubusercontent.com/${{ github.repository }}/$SHA/"
-          # 인스타가 가져가기 전에 이미지가 실제로 열리는지 확인
+          # 인스타가 가져가기 전에 파일이 실제로 열리는지 확인
           for i in $(seq 1 12); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" "${BASE}${OUT}/01.jpg")
+            code=$(curl -s -o /dev/null -w "%{http_code}" "${BASE}${CHECK}")
             [ "$code" = "200" ] && break
             echo "이미지 주소 대기 중($code)"; sleep 10
           done
+          if [ -n "$REEL" ]; then  # 영상은 jsDelivr 주소를 먼저 쓰므로 미리 한 번 불러 캐시
+            curl -s -o /dev/null -w "jsDelivr 영상 %{http_code} %{content_type}\n" \
+              "https://cdn.jsdelivr.net/gh/${{ github.repository }}@$SHA/$REEL/reel.mp4" || true
+          fi
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
 
-      - name: 미리보기 이미지 보관
+      - name: 미리보기 이미지·영상 보관
         if: steps.done.outputs.skip != 'true'
         uses: actions/upload-artifact@v7
         with:
           name: cards-${{ steps.slot.outputs.slot }}
-          path: ${{ steps.build.outputs.out }}
+          path: |
+            ${{ steps.build.outputs.out }}
+            ${{ steps.reel.outputs.reel }}
           retention-days: 14
 
       - name: 토큰 확인 (게시 없는 테스트 실행)
@@ -146,8 +176,8 @@ jobs:
               time.sleep(sec)
           EOF
 
-      - name: 인스타그램 게시
-        if: steps.done.outputs.skip != 'true' && steps.slot.outputs.publish == 'true'
+      - name: 인스타그램 게시 (카드뉴스)
+        if: steps.done.outputs.card_skip != 'true' && steps.slot.outputs.publish == 'true'
         env:
           IG_USER_ID: ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
@@ -155,16 +185,29 @@ jobs:
           GRAPH_VERSION: ${{ vars.GRAPH_VERSION }}
         run: python publish.py "${{ steps.build.outputs.out }}" "${{ steps.cdn.outputs.base }}" ${{ inputs.force && '--force' || '' }}
 
+      - name: 인스타그램 게시 (릴스)
+        if: always() && steps.done.outputs.reel_skip != 'true' && steps.reel.outcome == 'success' && steps.cdn.outcome == 'success' && steps.slot.outputs.publish == 'true'
+        env:
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          GRAPH_HOST: ${{ vars.GRAPH_HOST }}
+          GRAPH_VERSION: ${{ vars.GRAPH_VERSION }}
+        run: python publish.py --reel "${{ steps.reel.outputs.reel }}" "${{ steps.cdn.outputs.base }}" ${{ inputs.force && '--force' || '' }}
+
       - name: 게시 기록 저장 (중복 방지)
-        if: steps.done.outputs.skip != 'true' && steps.slot.outputs.publish == 'true'
+        if: always() && steps.done.outputs.skip != 'true' && steps.slot.outputs.publish == 'true'
         run: |
           git config user.name "unse-bot"
           git config user.email "unse-bot@users.noreply.github.com"
           git add posted
           git diff --cached --quiet && exit 0
-          git commit -qm "posted ${{ steps.build.outputs.out }}"
+          git commit -qm "posted ${{ steps.build.outputs.out }} ${{ steps.reel.outputs.reel }}"
           for i in 1 2 3 4 5; do
             git pull -q --rebase origin main && git push -q && exit 0
             sleep 10
           done
           echo "게시 기록 저장 실패" && exit 1
+
+      - name: 릴스 생성 실패 표시 (백업 실행이 다시 시도)
+        if: steps.reel.outcome == 'failure'
+        run: echo "릴스 생성에 실패했습니다. 위 '릴스 생성' 단계 로그를 확인하세요." && exit 1
