@@ -46,8 +46,8 @@ MEDAL = {1: (232, 192, 96), 2: (196, 204, 216), 3: (204, 140, 92)}
 # 장면 길이(초)
 T_HOOK, T_RANK, T_WARN, T_PAGE, T_OUTRO = 2.6, 3.4, 3.2, 2.6, 3.0
 
-# 배경음 스타일: trap(다크 팝-트랩) | lofi(로파이 힙합)
-BGM_STYLE = os.getenv("BGM_STYLE", "trap")
+# 배경음 스타일: lofi(로파이, 효과음 없이 부드럽게, 기본) | trap(다크 팝-트랩, 강조 효과음 포함)
+BGM_STYLE = os.getenv("BGM_STYLE", "lofi")
 
 
 # ---------------- 그리기 도구 ----------------

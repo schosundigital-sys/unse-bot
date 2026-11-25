@@ -2,7 +2,7 @@
 
 스타일 (reel.py 의 BGM_STYLE 로 선택)
   trap : 요즘 릴스에서 많이 쓰는 다크 팝-트랩. 808 베이스, 빠른 하이햇 롤, 클랩, 신스 플럭
-  lofi : 로파이 힙합. 재즈 코드 일렉피아노, 느슨한 스윙 비트, LP 잡음
+  lofi : 로파이 힙합. 재즈 코드 일렉피아노, 느슨한 스윙 비트, LP 잡음 (강조 효과음 없음, 기본)
 
 장면에 맞춰 곡이 움직입니다.
   훅     : 필터로 막힌 코드 + 차오르는 라이저 → 드롭
@@ -184,6 +184,34 @@ def reverb(x: np.ndarray, sec: float = 1.6, wet: float = 0.25) -> np.ndarray:
     return x + y * wet
 
 
+def _scene_fx(fx: np.ndarray, sections, drop: float, style: str) -> None:
+    """장면 강조 효과음 (라이저·임팩트·반짝음·빌드업)."""
+    _add(fx, riser(drop), 0, 1.0)
+    _add(fx, kick(1.2), 0, 0.9)                       # 첫 프레임부터 '쿵'
+    _add(fx, sparkle(79), 0.02, 1.0)
+    for s, kd in sections:
+        if kd == "hook":
+            continue
+        _add(fx, swoosh(0.4, rev=True), s - 0.4, 0.5)
+        if kd in ("rank3", "rank2"):
+            _add(fx, sparkle(84 if kd == "rank3" else 86), s + 0.04, 1.0)
+        if kd == "rank3":
+            _add(fx, impact(), s, 0.8)                    # 첫 드롭
+        if kd == "rank1":
+            # 직전 스네어 빌드업 (점점 빨라짐)
+            tt, g = s - 1.2, 0.15
+            while tt < s - 0.03:
+                _add(fx, snare() if style == "lofi" else clap(), tt, 0.25 + 0.5 * (1 - (s - tt) / 1.2))
+                tt += g
+                g = max(0.04, g * 0.8)
+            _add(fx, impact(), s, 1.0)
+            _add(fx, sparkle(88), s + 0.04, 1.3)
+        if kd == "warn":
+            _add(fx, impact(), s, 0.7)
+        if kd == "outro":
+            _add(fx, sparkle(81), s + 0.05, 1.0)
+
+
 # ---------------- 곡 구성 ----------------
 
 STYLES = {
@@ -192,7 +220,7 @@ STYLES = {
                  prog=[([57, 60, 64], 45), ([53, 57, 60], 41), ([48, 52, 55], 36), ([55, 59, 62], 43)],
                  dark=[([57, 60, 63], 45), ([53, 56, 60], 41)],
                  lead=[69, 72, 74, 76, 79, 81, 84]),
-    "lofi": dict(bpm=84, half=False, swing=0.18,
+    "lofi": dict(bpm=84, half=False, swing=0.18, fx=False,   # 강조 효과음 없이 부드럽게
                  prog=[([53, 57, 60, 64], 41), ([52, 55, 59, 62], 40), ([50, 53, 57, 60, 64], 38),
                        ([48, 52, 55, 59], 36)],
                  dark=[([50, 53, 56, 60], 38), ([49, 52, 56, 59], 37)],
@@ -298,31 +326,9 @@ def make(path: Path, duration: float, sections: list[tuple[float, str]], seed: i
         t += beat / 2
         k += 1
 
-    # 장면 효과음
-    _add(fx, riser(drop), 0, 1.0)
-    _add(fx, kick(1.2), 0, 0.9)                       # 첫 프레임부터 '쿵'
-    _add(fx, sparkle(79), 0.02, 1.0)
-    for s, kd in sections:
-        if kd == "hook":
-            continue
-        _add(fx, swoosh(0.4, rev=True), s - 0.4, 0.5)
-        if kd in ("rank3", "rank2"):
-            _add(fx, sparkle(84 if kd == "rank3" else 86), s + 0.04, 1.0)
-        if kd == "rank3":
-            _add(fx, impact(), s, 0.8)                    # 첫 드롭
-        if kd == "rank1":
-            # 직전 스네어 빌드업 (점점 빨라짐)
-            tt, g = s - 1.2, 0.15
-            while tt < s - 0.03:
-                _add(fx, snare() if style == "lofi" else clap(), tt, 0.25 + 0.5 * (1 - (s - tt) / 1.2))
-                tt += g
-                g = max(0.04, g * 0.8)
-            _add(fx, impact(), s, 1.0)
-            _add(fx, sparkle(88), s + 0.04, 1.3)
-        if kd == "warn":
-            _add(fx, impact(), s, 0.7)
-        if kd == "outro":
-            _add(fx, sparkle(81), s + 0.05, 1.0)
+    # 장면 효과음 (lofi는 사용 안 함)
+    if S.get("fx", True):
+        _scene_fx(fx, sections, drop, style)
 
     # 훅·주의 구간은 먹먹하게 (로우패스)
     muffled = _lp(music, 28)
@@ -332,7 +338,7 @@ def make(path: Path, duration: float, sections: list[tuple[float, str]], seed: i
             e = next((x for x, _ in sections if x > s), duration)
             a, b = int(s * SR), int(e * SR)
             mask[a:b] = 1
-    mask = _lp(mask, int(SR * 0.15))
+    mask = _lp(mask, int(SR * (0.15 if S.get("fx", True) else 0.8)))  # lofi는 천천히 열림
     music = music * (1 - mask) + muffled * mask * 1.3
 
     # 킥에 맞춰 패드가 출렁이는 사이드체인
@@ -344,6 +350,9 @@ def make(path: Path, duration: float, sections: list[tuple[float, str]], seed: i
         mix = _lp(mix, 2) + crackle(n) * 1.0         # 살짝 둥근 소리 + LP 잡음
 
     mix = mix[:int(SR * duration)]
+    if not S.get("fx", True):
+        fi = int(SR * 0.5)
+        mix[:fi] *= np.linspace(0, 1, fi)
     fo = int(SR * 1.0)
     mix[-fo:] *= np.linspace(1, 0, fo)
     mix = np.tanh(mix / (np.max(np.abs(mix)) + 1e-9) * 1.4) / np.tanh(1.4)
