@@ -162,6 +162,7 @@ class Scene:
     mark_color: tuple = GOLD
     tint: tuple | None = None  # 배경 색조 (주의 장면 붉은빛)
     bell: bool = False
+    kind: str = ""             # 배경음 구간 (hook·rank3·rank2·rank1·warn·rest·outro)
 
 
 def ease_out_back(x: float) -> float:
@@ -293,7 +294,7 @@ def build_scenes(d: date, seed: int):
         (seals, 0.95, "fade", 64),
         (text_img("끝까지 보면 '조심할 띠'도 공개", 48, 700, SUB, shadow=False), 1.35, "up", 0),
     ]
-    scenes.append(Scene(T_HOOK, _stack(items, SAFE_TOP, SAFE_BOTTOM), mark="運", bell=False))
+    scenes.append(Scene(T_HOOK, _stack(items, SAFE_TOP, SAFE_BOTTOM), mark="運", kind="hook"))
 
     # 1~3) 3위 → 2위 → 1위
     for rank_no, r in ((3, top[2]), (2, top[1]), (1, top[0])):
@@ -313,7 +314,7 @@ def build_scenes(d: date, seed: int):
             sealel = els[1]
             ray = rays_img(880, GOLD)
             els.insert(0, El(ray, CX, sealel.y + sealel.img.height / 2 - 440, 0.1, "spin", 0.5))
-        scenes.append(Scene(T_RANK, els, mark=z.hanja, mark_color=col, bell=True))
+        scenes.append(Scene(T_RANK, els, mark=z.hanja, mark_color=col, bell=True, kind=f"rank{rank_no}"))
 
     # 4) 조심할 띠
     z = warn.z
@@ -328,7 +329,7 @@ def build_scenes(d: date, seed: int):
         items.append((text_img(f"특히 {yr}", 50, 800, (240, 130, 120), shadow=False), 1.1, "up", 8))
         items.append((para_img(txt, 42, TEXT_W - 40, 400, SUB, kind="sans", max_lines=2), 1.25, "up", 0))
     scenes.append(Scene(T_WARN, _stack(items, SAFE_TOP, SAFE_BOTTOM), mark=z.hanja, mark_color=RED,
-                        tint=(150, 30, 30), bell=True))
+                        tint=(150, 30, 30), bell=True, kind="warn"))
 
     # 5) 나머지 8띠: 2띠씩 4화면
     for i in range(0, len(rest), 2):
@@ -350,7 +351,7 @@ def build_scenes(d: date, seed: int):
             row = row.crop((0, 0, row.width, 230 + body.height))
             els.append(El(row, CX, y, t0, "up", 0.35))
             y += row.height + 90
-        sc = Scene(T_PAGE, els, mark=pair[0].z.hanja, mark_color=GOLD)
+        sc = Scene(T_PAGE, els, mark=pair[0].z.hanja, mark_color=GOLD, kind="rest")
         scenes.append(sc)
 
     # 6) 마무리
@@ -361,7 +362,7 @@ def build_scenes(d: date, seed: int):
         (text_img(ACCOUNT, 64, 800, GOLD, kind="serif"), 0.8, "up", 14),
         (text_img("팔로우하면 매일 아침 7시 운세 도착", 46, 500, SUB, shadow=False), 0.95, "up", 0),
     ]
-    scenes.append(Scene(T_OUTRO, _stack(items, SAFE_TOP, SAFE_BOTTOM), mark="福"))
+    scenes.append(Scene(T_OUTRO, _stack(items, SAFE_TOP, SAFE_BOTTOM), mark="福", kind="outro"))
 
     info = dict(hook=f"{h1} {h2}", top=top, warn=warn, date_txt=date_txt)
     return scenes, info
@@ -405,8 +406,7 @@ def build(d: date) -> Path:
         t += sc.length
     total = t
     wav = bgm.make(out / "bgm.wav", total + 0.2,
-                   bells=[s for s, sc in zip(starts, scenes) if sc.bell],
-                   whooshes=starts[1:], seed=seed)
+                   sections=[(s, sc.kind) for s, sc in zip(starts, scenes)], seed=seed)
 
     mp4 = out / "reel.mp4"
     cmd = [find_ffmpeg(), "-y", "-loglevel", "error",
