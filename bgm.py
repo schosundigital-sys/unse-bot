@@ -1,12 +1,16 @@
 """릴스 배경음 – 코드로 직접 합성하므로 저작권 걱정이 없습니다.
 
-장면에 맞춰 곡이 바뀝니다.
-  훅      : 낮은 드론 + 위로 차오르는 바람 소리(라이저)
-  3·2위   : 드럼·베이스·화음이 들어오는 본 그루브 + 가야금 선율 + 공개 순간 풍경 소리
-  1위     : 직전 북 롤 → 징 + 반짝이는 종소리, 대금 같은 피리 선율이 겹침
-  주의    : 드럼이 빠지고 낮은 쿵 + 어두운 화음
-  나머지  : 가벼운 그루브 (셰이커 위주)
-  마무리  : 으뜸화음으로 풀리며 종소리
+스타일 (reel.py 의 BGM_STYLE 로 선택)
+  trap : 요즘 릴스에서 많이 쓰는 다크 팝-트랩. 808 베이스, 빠른 하이햇 롤, 클랩, 신스 플럭
+  lofi : 로파이 힙합. 재즈 코드 일렉피아노, 느슨한 스윙 비트, LP 잡음
+
+장면에 맞춰 곡이 움직입니다.
+  훅     : 필터로 막힌 코드 + 차오르는 라이저 → 드롭
+  3·2위  : 비트 전체 + 공개 순간 반짝 효과음
+  1위    : 직전 스네어 빌드업 → 임팩트, 리드 신스가 겹침
+  주의   : 소리가 먹먹해지고(로우패스) 808만 낮게
+  나머지 : 리드 없이 가벼운 비트
+  마무리 : 코드 한 번 치고 리버브로 사라짐
 """
 from __future__ import annotations
 
@@ -16,182 +20,195 @@ from pathlib import Path
 import numpy as np
 
 SR = 44100
-BPM = 96
-BEAT = 60 / BPM
-BAR = BEAT * 4
+RNG = np.random.default_rng(11)
+NOISE = RNG.normal(0, 1, SR * 6)
 
-# 음 높이 (Hz)
-N = {"D2": 73.42, "F2": 87.31, "G2": 98.00, "A2": 110.0, "Bb2": 116.54, "C3": 130.81, "D3": 146.83,
-     "F3": 174.61, "G3": 196.0, "A3": 220.0, "Bb3": 233.08, "C4": 261.63, "D4": 293.66, "E4": 329.63,
-     "F4": 349.23, "G4": 392.0, "A4": 440.0, "C5": 523.25, "D5": 587.33, "F5": 698.46, "G5": 783.99,
-     "A5": 880.0}
-PENTA = ["D4", "F4", "G4", "A4", "C5", "D5", "F5", "G5", "A5"]
-# i – VI – VII – i  (Dm – Bb – C – Dm)
-PROG = [("D2", ["D3", "F3", "A3"]), ("Bb2", ["Bb2", "D3", "F3"]), ("C3", ["C3", "E4", "G3"]),
-        ("D2", ["D3", "F3", "A3"])]
-DARK = [("D2", ["D3", "F3", "A3"]), ("Bb2", ["Bb2", "D3", "F3"])]
+
+def hz(midi: float) -> float:
+    return 440.0 * 2 ** ((midi - 69) / 12)
 
 
 def _t(sec: float) -> np.ndarray:
-    return np.arange(int(SR * sec)) / SR
+    return np.arange(max(1, int(SR * sec))) / SR
 
 
 def _lp(x: np.ndarray, k: int) -> np.ndarray:
-    """간단한 저역 통과(이동평균)."""
     if k <= 1:
         return x
     return np.convolve(x, np.ones(k) / k, mode="same")
 
 
-RNG = np.random.default_rng(11)
-NOISE = RNG.normal(0, 1, SR * 4)
+def _hp(x: np.ndarray, k: int = 8) -> np.ndarray:
+    return x - _lp(x, k)
 
-
-# ---------------- 악기 ----------------
-
-def pluck(f: float, dur: float = 1.4) -> np.ndarray:
-    """가야금: 튕긴 뒤 살짝 음이 내려앉고, 끝에 농현(떨림)."""
-    t = _t(dur)
-    bend = 1 + 0.015 * np.exp(-t * 20) + 0.004 * np.sin(2 * np.pi * 5.5 * t) * np.clip(t - 0.35, 0, 1)
-    ph = 2 * np.pi * f * np.cumsum(bend) / SR
-    y = sum(a * np.sin(k * ph) * np.exp(-t * (2.5 + 1.8 * k))
-            for k, a in ((1, 1.0), (2, 0.55), (3, 0.32), (4, 0.18), (5, 0.1), (6, 0.05)))
-    return y * np.minimum(t / 0.003, 1) * 0.30
-
-
-def flute(f: float, dur: float) -> np.ndarray:
-    """대금 느낌: 부드럽게 들어오는 숨소리 섞인 사인 + 비브라토."""
-    t = _t(dur)
-    vib = 1 + 0.006 * np.sin(2 * np.pi * 5.2 * t) * np.clip(t / 0.4, 0, 1)
-    ph = 2 * np.pi * f * np.cumsum(vib) / SR
-    y = np.sin(ph) + 0.25 * np.sin(2 * ph) + 0.08 * np.sin(3 * ph)
-    breath = _lp(NOISE[:len(t)], 6) * 0.18
-    env = np.minimum(t / 0.12, 1) * np.minimum((dur - t) / 0.25, 1).clip(0, 1)
-    return (y + breath) * env * 0.16
-
-
-def pad(notes: list[str], dur: float, dark: bool = False) -> np.ndarray:
-    t = _t(dur)
-    y = np.zeros_like(t)
-    for n in notes:
-        f = N[n]
-        for det in (-0.35, 0.0, 0.35):  # 살짝 어긋난 3겹 → 풍성하게
-            ph = 2 * np.pi * (f + det) * t
-            y += np.sin(ph) + 0.35 * np.sin(2 * ph) + 0.15 * np.sin(3 * ph)
-    env = np.minimum(t / 0.35, 1) * np.minimum((dur - t) / 0.4, 1).clip(0, 1)
-    return y * env * (0.020 if not dark else 0.026)
-
-
-def bass(f: float, dur: float = 0.45) -> np.ndarray:
-    t = _t(dur)
-    y = np.sin(2 * np.pi * f * t) + 0.3 * np.sin(4 * np.pi * f * t)
-    return y * np.exp(-t * 4.5) * np.minimum(t / 0.004, 1) * 0.42
-
-
-def kick(dur: float = 0.5) -> np.ndarray:
-    t = _t(dur)
-    f = 52 + 95 * np.exp(-t * 32)
-    y = np.sin(2 * np.pi * np.cumsum(f) / SR) * np.exp(-t * 8)
-    return (y + NOISE[:len(t)] * np.exp(-t * 90) * 0.12) * 0.75
-
-
-def tak(dur: float = 0.18) -> np.ndarray:
-    """장구 '덕' 같은 짧고 마른 소리."""
-    t = _t(dur)
-    n = np.diff(NOISE[:len(t) + 1]) * 0.5
-    tone = np.sin(2 * np.pi * 380 * t) * 0.6
-    return (n * np.exp(-t * 45) + tone * np.exp(-t * 30)) * 0.32
-
-
-def shaker(dur: float = 0.09) -> np.ndarray:
-    t = _t(dur)
-    n = np.diff(NOISE[1000:1000 + len(t) + 1])
-    return n * np.exp(-t * 70) * 0.10
-
-
-def bell(f: float = 1318.5, dur: float = 2.6) -> np.ndarray:
-    t = _t(dur)
-    y = sum(a * np.sin(2 * np.pi * f * r * t) * np.exp(-t * d)
-            for r, a, d in ((1, 1.0, 1.4), (2.76, 0.42, 3.0), (5.40, 0.2, 5.0), (0.5, 0.3, 1.0)))
-    return y * np.minimum(t / 0.002, 1) * 0.20
-
-
-def gong(dur: float = 4.0) -> np.ndarray:
-    """징: 낮게 웅- 하고 오래 울림."""
-    t = _t(dur)
-    f0 = 98 * (1 - 0.03 * np.exp(-t * 2))
-    ph = 2 * np.pi * np.cumsum(f0) / SR
-    y = sum(a * np.sin(r * ph) for r, a in ((1, 1), (1.47, 0.5), (2.09, 0.4), (2.56, 0.25), (3.1, 0.15)))
-    swell = np.minimum(t / 0.05, 1) * np.exp(-t * 0.9) * (1 + 0.2 * np.sin(2 * np.pi * 3 * t))
-    return y * swell * 0.30
-
-
-def boom(dur: float = 2.0) -> np.ndarray:
-    t = _t(dur)
-    f = 40 + 60 * np.exp(-t * 6)
-    return np.sin(2 * np.pi * np.cumsum(f) / SR) * np.exp(-t * 2.2) * 0.9
-
-
-def riser(dur: float) -> np.ndarray:
-    t = _t(dur)
-    k = np.linspace(40, 2, len(t)).astype(int)
-    n = NOISE[:len(t)].copy()
-    out = np.empty_like(n)
-    for i in range(0, len(n), 2048):  # 점점 밝아지는 바람 소리
-        out[i:i + 2048] = _lp(n[i:i + 2048], int(k[i]))
-    sweep = np.sin(2 * np.pi * np.cumsum(np.linspace(200, 900, len(t))) / SR) * 0.15
-    return (out * 2.2 + sweep) * (t / dur) ** 2 * 0.35
-
-
-def roll(dur: float = 1.2) -> np.ndarray:
-    """북 롤: 점점 빨라지고 커지는 연타."""
-    out = np.zeros(int(SR * dur))
-    t, gap = 0.0, 0.16
-    while t < dur - 0.05:
-        k = kick(0.25) * 0.5 * (0.4 + 0.6 * t / dur)
-        i = int(t * SR)
-        out[i:i + len(k)] += k[:len(out) - i]
-        t += gap
-        gap = max(0.045, gap * 0.86)
-    return out
-
-
-def whoosh(dur: float = 0.4) -> np.ndarray:
-    t = _t(dur)
-    n = _lp(NOISE[5000:5000 + len(t)], 10)
-    return n * np.sin(np.pi * t / dur) ** 2 * 0.5
-
-
-# ---------------- 편곡 ----------------
 
 def _add(buf: np.ndarray, sig: np.ndarray, at: float, gain: float = 1.0) -> None:
     i = int(at * SR)
     if i < 0:
         sig, i = sig[-i:], 0
-    if i >= len(buf):
+    if i >= len(buf) or len(sig) == 0:
         return
     n = min(len(sig), len(buf) - i)
     buf[i:i + n] += sig[:n] * gain
 
 
-def _motif(rng, length: int = 8) -> list[int | None]:
-    """8분음표 8개짜리 짧은 선율 동기 (None = 쉼표)."""
-    idx, out = 3, []
-    for k in range(length):
-        if k in (0, 3, 4) or rng.random() < 0.55:
-            idx = int(np.clip(idx + rng.choice([-2, -1, 1, 1, 2, -1]), 0, len(PENTA) - 1))
-            out.append(idx)
-        else:
-            out.append(None)
+# ---------------- 드럼 ----------------
+
+def kick(punch: float = 1.0) -> np.ndarray:
+    t = _t(0.45)
+    f = 48 + 140 * np.exp(-t * 38)
+    y = np.sin(2 * np.pi * np.cumsum(f) / SR) * np.exp(-t * 7.5)
+    click = _hp(NOISE[:len(t)], 4) * np.exp(-t * 400) * 0.5
+    return np.tanh((y + click) * 1.6 * punch) * 0.62
+
+
+def clap() -> np.ndarray:
+    t = _t(0.3)
+    n = _hp(_lp(NOISE[2000:2000 + len(t)], 3), 12)
+    env = np.zeros_like(t)
+    for d in (0.0, 0.011, 0.022):  # 손뼉 여러 번 겹친 느낌
+        env += np.where(t >= d, np.exp(-(t - d) * 60), 0)
+    env += np.exp(-t * 14) * 0.35
+    return n * env * 0.55
+
+
+def snare() -> np.ndarray:
+    t = _t(0.25)
+    tone = np.sin(2 * np.pi * 190 * t) * np.exp(-t * 30)
+    n = _hp(NOISE[3000:3000 + len(t)], 6) * np.exp(-t * 22)
+    return (tone * 0.5 + n * 0.6) * 0.6
+
+
+def hat(open_: bool = False) -> np.ndarray:
+    t = _t(0.25 if open_ else 0.05)
+    n = _hp(_hp(NOISE[4000:4000 + len(t)], 3), 3)
+    return n * np.exp(-t * (14 if open_ else 110)) * 0.22
+
+
+def b808(midi: float, dur: float, glide_from: float | None = None) -> np.ndarray:
+    t = _t(dur)
+    f = np.full_like(t, hz(midi))
+    if glide_from is not None:
+        f = hz(midi) + (hz(glide_from) - hz(midi)) * np.exp(-t * 18)
+    y = np.sin(2 * np.pi * np.cumsum(f) / SR)
+    env = np.minimum(t / 0.005, 1) * np.exp(-t * 1.1) * np.minimum((dur - t) / 0.04, 1).clip(0, 1)
+    y = y + 0.35 * np.sin(2 * np.pi * 2 * np.cumsum(f) / SR)   # 휴대폰 스피커에서도 들리게 2배음
+    return np.tanh(y * 2.6) * env * 0.36
+
+
+# ---------------- 신스·피아노 ----------------
+
+def supersaw(midi: float, dur: float) -> np.ndarray:
+    """요즘 팝의 넓은 패드: 살짝 어긋난 톱니파 5겹 (배음 제한)."""
+    t = _t(dur)
+    y = np.zeros_like(t)
+    f0 = hz(midi)
+    for det in (-0.12, -0.05, 0.0, 0.05, 0.12):
+        f = f0 * 2 ** (det / 12)
+        ph = 2 * np.pi * f * t + RNG.uniform(0, 6.28)
+        for k in range(1, 9):
+            y += np.sin(k * ph) / k
+    env = np.minimum(t / 0.08, 1) * np.minimum((dur - t) / 0.15, 1).clip(0, 1)
+    return y * env * 0.017
+
+
+def pluck_synth(midi: float, dur: float = 0.6) -> np.ndarray:
+    """신스 플럭: 처음엔 밝고 빠르게 어두워짐."""
+    t = _t(dur)
+    ph = 2 * np.pi * hz(midi) * t
+    y = sum(np.sin(k * ph) / k * np.exp(-t * (6 + 5 * k)) for k in range(1, 12))
+    return y * np.minimum(t / 0.002, 1) * 0.22
+
+
+def epiano(midi: float, dur: float) -> np.ndarray:
+    """로파이 일렉피아노(로즈 느낌): FM으로 종소리 섞인 부드러운 음."""
+    t = _t(dur)
+    ph = 2 * np.pi * hz(midi) * t
+    y = np.sin(ph + 1.2 * np.exp(-t * 3) * np.sin(ph)) + 0.2 * np.sin(2 * ph) * np.exp(-t * 2)
+    trem = 1 + 0.08 * np.sin(2 * np.pi * 4.5 * t)
+    env = np.minimum(t / 0.004, 1) * np.exp(-t * 0.9) * np.minimum((dur - t) / 0.1, 1).clip(0, 1)
+    return y * trem * env * 0.09
+
+
+def sparkle(base_midi: float = 84) -> np.ndarray:
+    """순위 공개 순간 '띠리링' 반짝음."""
+    out = np.zeros(int(SR * 1.2))
+    for j, iv in enumerate((0, 7, 12, 16, 19)):
+        t = _t(0.9)
+        s = np.sin(2 * np.pi * hz(base_midi + iv) * t) * np.exp(-t * 5)
+        _add(out, s, j * 0.045, 0.16)
     return out
 
 
-def make(path: Path, duration: float, sections: list[tuple[float, str]], seed: int = 0) -> Path:
-    """sections: [(시작초, 종류)] 종류 = hook | rank3 | rank2 | rank1 | warn | rest | outro"""
+def swoosh(dur: float = 0.45, rev: bool = False) -> np.ndarray:
+    t = _t(dur)
+    n = _hp(NOISE[5000:5000 + len(t)], 4)
+    env = (t / dur) ** 2.5 if rev else np.sin(np.pi * t / dur) ** 2
+    return n * env * 0.5
+
+
+def riser(dur: float) -> np.ndarray:
+    t = _t(dur)
+    out = np.empty_like(t)
+    n = NOISE[:len(t)]
+    ks = np.linspace(48, 2, len(t)).astype(int)
+    for i in range(0, len(n), 2048):
+        out[i:i + 2048] = _lp(n[i:i + 2048], int(ks[i]))
+    tone = np.sin(2 * np.pi * np.cumsum(np.linspace(220, 1400, len(t))) / SR) * 0.12
+    return (out * 2.0 + tone) * (t / dur) ** 2.2 * 0.4
+
+
+def impact() -> np.ndarray:
+    t = _t(2.2)
+    sub = np.sin(2 * np.pi * np.cumsum(35 + 80 * np.exp(-t * 9)) / SR) * np.exp(-t * 2.5)
+    n = _lp(NOISE[:len(t)], 3) * np.exp(-t * 6) * 0.3
+    return np.tanh((sub + n) * 1.5) * 0.8
+
+
+def crackle(n: int) -> np.ndarray:
+    """LP 판 잡음."""
+    hiss = _hp(NOISE[:n] if n <= len(NOISE) else np.resize(NOISE, n), 3) * 0.006
+    pops = np.zeros(n)
+    idx = RNG.integers(0, n, n // 2500)
+    pops[idx] = RNG.uniform(-0.25, 0.25, len(idx))
+    return hiss + _lp(pops, 2)
+
+
+def reverb(x: np.ndarray, sec: float = 1.6, wet: float = 0.25) -> np.ndarray:
+    t = _t(sec)
+    ir = NOISE[:len(t)] * np.exp(-t * (6.9 / sec))
+    ir = _lp(ir, 4)
+    ir /= np.sqrt((ir ** 2).sum())
+    n = len(x) + len(ir)
+    y = np.fft.irfft(np.fft.rfft(x, n) * np.fft.rfft(ir, n), n)[:len(x)]
+    return x + y * wet
+
+
+# ---------------- 곡 구성 ----------------
+
+STYLES = {
+    # 마디별 코드 (MIDI)와 808 근음
+    "trap": dict(bpm=140, half=True, swing=0.0,
+                 prog=[([57, 60, 64], 45), ([53, 57, 60], 41), ([48, 52, 55], 36), ([55, 59, 62], 43)],
+                 dark=[([57, 60, 63], 45), ([53, 56, 60], 41)],
+                 lead=[69, 72, 74, 76, 79, 81, 84]),
+    "lofi": dict(bpm=84, half=False, swing=0.18,
+                 prog=[([53, 57, 60, 64], 41), ([52, 55, 59, 62], 40), ([50, 53, 57, 60, 64], 38),
+                       ([48, 52, 55, 59], 36)],
+                 dark=[([50, 53, 56, 60], 38), ([49, 52, 56, 59], 37)],
+                 lead=[72, 74, 76, 79, 81, 84]),
+}
+
+
+def make(path: Path, duration: float, sections: list[tuple[float, str]], seed: int = 0,
+         style: str = "trap") -> Path:
+    S = STYLES[style]
     rng = np.random.default_rng(seed)
+    beat = 60 / S["bpm"]
+    bar = beat * 4 * (2 if S["half"] else 1)          # 트랩은 반박자 느낌(하프타임)으로 2배 길게
+    step = beat / 4                                     # 16분음표
     n = int(SR * (duration + 0.5))
-    drums, music, fx = np.zeros(n), np.zeros(n), np.zeros(n)
-    bounds = sections + [(duration, "end")]
+    drums, music, lead, fx = (np.zeros(n) for _ in range(4))
 
     def kind_at(t: float) -> str:
         k = "hook"
@@ -200,114 +217,141 @@ def make(path: Path, duration: float, sections: list[tuple[float, str]], seed: i
                 k = kd
         return k
 
-    groove_from = next((s for s, k in sections if k != "hook"), 2.6)
-    motif_a, motif_b = _motif(rng), _motif(rng)
+    drop = next((s for s, k in sections if k != "hook"), 2.6)
+    starts = {kd: s for s, kd in sections}
 
-    # 화음·베이스: 본 그루브 시작 시점부터 마디 단위
-    t, bar_i = groove_from, 0
-    _add(music, pad(PROG[0][1], groove_from + 0.3), 0, 0.6)          # 훅 동안 옅은 화음
-    _add(music, pad(["D2", "A2"], groove_from + 0.3), 0, 0.9)
+    # 코드 + 808 (드롭 시점 기준 마디 정렬)
+    t0 = drop - np.ceil(drop / bar) * bar
+    t, i = t0, 0
     while t < duration:
-        kd = kind_at(t + 0.01)
-        chords = DARK if kd == "warn" else PROG
-        root, notes = chords[bar_i % len(chords)]
-        _add(music, pad(notes, BAR + 0.3, dark=kd == "warn"), t, 1.0)
-        if kd not in ("warn", "outro"):
-            for b, g in ((0, 1.0), (1.5, 0.7), (2, 0.9), (3.5, 0.6)):  # 쿵-따-쿵 싱코페이션
-                _add(music, bass(N[root] * (2 if b == 3.5 else 1)), t + b * BEAT, g)
-        elif kd == "warn":
-            _add(music, bass(N[root], 1.6), t, 1.0)
-        t += BAR
-        bar_i += 1
-
-    # 드럼
-    t = groove_from
-    step = BEAT / 4
-    i = 0
-    while t < duration:
-        kd = kind_at(t + 0.001)
-        pos = i % 16
-        if kd in ("rank3", "rank2", "rank1"):
-            if pos in (0, 8, 10):
-                _add(drums, kick(), t, 1.0)
-            if pos in (4, 12):
-                _add(drums, tak(), t, 1.0)
-            if pos in (7, 15) and rng.random() < 0.6:
-                _add(drums, tak(), t, 0.45)
-            if pos % 2 == 0:
-                _add(drums, shaker(), t, 1.0 if pos % 4 == 2 else 0.6)
-        elif kd == "rest":
-            if pos in (0, 8):
-                _add(drums, kick(), t, 0.7)
-            if pos in (4, 12):
-                _add(drums, tak(), t, 0.6)
-            if pos % 2 == 0:
-                _add(drums, shaker(), t, 0.8)
-        elif kd == "warn":
-            if pos == 0:
-                _add(drums, kick(), t, 0.5)
-        t += step
+        kd = kind_at(max(t, 0) + 0.01)
+        prog = S["dark"] if kd == "warn" else S["prog"]
+        notes, root = prog[i % len(prog)]
+        if style == "trap":
+            for m in notes:
+                _add(music, supersaw(m, bar + 0.1), t, 1.0)
+                _add(music, supersaw(m + 12, bar + 0.1), t, 0.35)
+        else:
+            for j, m in enumerate(notes):  # 살짝 흘려 치는 코드
+                _add(music, epiano(m, bar * 0.98), t + j * 0.018, 1.0)
+            _add(music, epiano(notes[0] + 12, beat * 1.5), t + beat * 2.5, 0.6)
+        if t >= drop - 0.01 and kd != "outro":
+            if style == "trap":
+                _add(music, b808(root, bar * 0.55), t, 1.0)
+                _add(music, b808(root, bar * 0.4, glide_from=root + 5), t + bar * 0.625, 0.9)
+            else:
+                _add(music, b808(root, beat * 1.8), t, 0.7)
+                _add(music, b808(root + 7, beat * 0.9), t + beat * 2.5, 0.5)
+        t += bar
         i += 1
 
-    # 선율: 가야금 동기 반복 (A A B A), 1위·마무리에서 대금 겹침
-    t, k = groove_from, 0
-    while t < duration - 0.8:
+    # 드럼 (16분음표 격자)
+    t, k = drop, 0
+    sw = S["swing"] * step
+    while t < duration:
         kd = kind_at(t + 0.001)
-        bar_no = int((t - groove_from) / BAR)
-        motif = motif_b if bar_no % 4 == 2 else motif_a
-        idx = motif[k % 8]
-        if idx is not None and kd not in ("warn",):
-            off = -2 if kd == "rest" else 0
-            note = PENTA[int(np.clip(idx + off, 0, len(PENTA) - 1))]
-            _add(music, pluck(N[note]), t, 0.9 if k % 8 == 0 else 0.65)
-        elif idx is not None and kd == "warn" and k % 4 == 0:
-            _add(music, pluck(N[PENTA[max(0, idx - 3)]] / 2, 2.0), t, 0.7)
-        t += BEAT / 2
+        pos = k % (32 if S["half"] else 16)
+        tt = t + (sw if k % 2 else 0)
+        full = kd in ("rank3", "rank2", "rank1")
+        light = kd == "rest"
+        if style == "trap":
+            if kd != "warn" and kd != "outro":
+                if pos in (0, 10, 19) or (full and pos == 22):
+                    _add(drums, kick(), tt, 1.0)
+                if pos in (8, 24):
+                    _add(drums, clap(), tt, 1.0)
+                # 하이햇: 8분 기본 + 1위에서 32분 롤
+                if pos % 2 == 0 or (full and pos in (13, 29)):
+                    _add(drums, hat(), tt, 0.9 if pos % 4 == 0 else 0.6)
+                if kd == "rank1" and pos in (28, 29, 30, 31):
+                    for r in range(2):
+                        _add(drums, hat(), tt + r * step / 2, 0.5)
+                if full and pos == 30:
+                    _add(drums, hat(True), tt, 0.6)
+            elif kd == "warn" and pos == 0:
+                _add(drums, kick(0.7), tt, 0.7)
+        else:  # lofi
+            if kd not in ("warn", "outro"):
+                if pos in (0, 7, 10):
+                    _add(drums, kick(0.8), tt, 0.85)
+                if pos in (4, 12):
+                    _add(drums, snare(), tt, 0.9)
+                if pos % 2 == 0:
+                    _add(drums, hat(), tt, 0.55 if light else 0.7)
+            elif kd == "warn" and pos == 0:
+                _add(drums, kick(0.6), tt, 0.6)
+        t += step
         k += 1
 
-    # 장면 전환 효과음
+    # 리드: 짧은 동기 반복 (순위 구간), 1위에서 한 옥타브 위 겹침
+    motif = [rng.choice(len(S["lead"])) if (j in (0, 3, 6) or rng.random() < 0.4) else None for j in range(8)]
+    t, k = drop, 0
+    while t < duration - 1:
+        kd = kind_at(t + 0.001)
+        idx = motif[k % 8]
+        if idx is not None and kd in ("rank3", "rank2", "rank1"):
+            m = S["lead"][idx]
+            fn = pluck_synth if style == "trap" else epiano
+            _add(lead, fn(m, 0.5) if style == "trap" else fn(m, 0.6), t + (sw if k % 2 else 0), 1.0 if style == "trap" else 1.6)
+            if kd == "rank1":
+                _add(lead, fn(m + 12, 0.4), t, 0.45)
+        t += beat / 2
+        k += 1
+
+    # 장면 효과음
+    _add(fx, riser(drop), 0, 1.0)
+    _add(fx, kick(1.2), 0, 0.9)                       # 첫 프레임부터 '쿵'
+    _add(fx, sparkle(79), 0.02, 1.0)
     for s, kd in sections:
         if kd == "hook":
-            _add(fx, riser(groove_from), 0, 1.0)
-            _add(fx, kick(), 0, 1.0)                       # 첫 1초부터 귀를 잡는 시작음
-            _add(fx, bell(1567.98, 2.0), 0.01, 0.8)
-            for j, nm in enumerate(("D4", "F4", "A4", "D5", "F5")):  # 가야금 쓸어내리기
-                _add(music, pluck(N[nm]), 0.05 + j * 0.09, 0.8)
-            for j in range(4):                              # 훅 끝 '둥-둥-둥-둥' 예고
-                _add(drums, kick(0.3), groove_from - BEAT * (4 - j) / 2, 0.35 + 0.15 * j)
             continue
-        _add(fx, whoosh(), s - 0.25, 0.4)
+        _add(fx, swoosh(0.4, rev=True), s - 0.4, 0.5)
         if kd in ("rank3", "rank2"):
-            _add(fx, bell(), s + 0.05, 1.0)
-            _add(fx, bell(1975.5), s + 0.13, 0.45)
-        elif kd == "rank1":
-            _add(fx, roll(1.1), s - 1.1, 1.0)
-            _add(fx, gong(), s, 0.9)
-            for j, f in enumerate((1318.5, 1567.98, 1975.5, 2637.0)):  # 반짝 상승 종
-                _add(fx, bell(f, 1.8), s + 0.06 + j * 0.07, 0.55)
-            for j, nm in enumerate(("A4", "C5", "D5")):
-                _add(music, flute(N[nm], BEAT * (2 if j < 2 else 4)), s + 0.3 + j * BEAT * 2, 1.0)
-        elif kd == "warn":
-            _add(fx, boom(), s, 1.0)
-        elif kd == "outro":
-            _add(music, pad(["D3", "F3", "A3", "D4"], 3.5), s, 1.2)
-            _add(music, flute(N["D5"], 2.4), s + 0.2, 0.9)
-            _add(fx, bell(1174.66, 3.0), s + 0.1, 0.9)
-            _add(fx, kick(), s, 0.8)
+            _add(fx, sparkle(84 if kd == "rank3" else 86), s + 0.04, 1.0)
+        if kd == "rank3":
+            _add(fx, impact(), s, 0.8)                    # 첫 드롭
+        if kd == "rank1":
+            # 직전 스네어 빌드업 (점점 빨라짐)
+            tt, g = s - 1.2, 0.15
+            while tt < s - 0.03:
+                _add(fx, snare() if style == "lofi" else clap(), tt, 0.25 + 0.5 * (1 - (s - tt) / 1.2))
+                tt += g
+                g = max(0.04, g * 0.8)
+            _add(fx, impact(), s, 1.0)
+            _add(fx, sparkle(88), s + 0.04, 1.3)
+        if kd == "warn":
+            _add(fx, impact(), s, 0.7)
+        if kd == "outro":
+            _add(fx, sparkle(81), s + 0.05, 1.0)
 
-    # 킥이 칠 때 화음을 살짝 눌러 리듬감 (사이드체인)
-    env = _lp(np.abs(drums), 900)
-    duck = 1 - np.clip(env * 2.2, 0, 0.35)
-    mix = music * duck + drums * 0.9 + fx * 0.85
+    # 훅·주의 구간은 먹먹하게 (로우패스)
+    muffled = _lp(music, 28)
+    mask = np.zeros(n)
+    for s, kd in sections:
+        if kd in ("hook", "warn"):
+            e = next((x for x, _ in sections if x > s), duration)
+            a, b = int(s * SR), int(e * SR)
+            mask[a:b] = 1
+    mask = _lp(mask, int(SR * 0.15))
+    music = music * (1 - mask) + muffled * mask * 1.3
+
+    # 킥에 맞춰 패드가 출렁이는 사이드체인
+    kenv = _lp(np.abs(drums), 1500)
+    pump = 1 - np.clip(kenv * 3.0, 0, 0.5)
+    bus = reverb(music * pump + lead * 1.25, 1.8, 0.28)
+    mix = bus + drums * 0.95 + reverb(fx, 1.2, 0.2) * 0.9
+    if style == "lofi":
+        mix = _lp(mix, 2) + crackle(n) * 1.0         # 살짝 둥근 소리 + LP 잡음
 
     mix = mix[:int(SR * duration)]
-    fade_in, fade_out = int(SR * 0.05), int(SR * 1.2)
-    mix[:fade_in] *= np.linspace(0, 1, fade_in)
-    mix[-fade_out:] *= np.linspace(1, 0, fade_out)
-    mix = np.tanh(mix / (np.max(np.abs(mix)) + 1e-9) * 1.6) / np.tanh(1.6) * 0.92  # 부드러운 리미터
+    fo = int(SR * 1.0)
+    mix[-fo:] *= np.linspace(1, 0, fo)
+    mix = np.tanh(mix / (np.max(np.abs(mix)) + 1e-9) * 1.4) / np.tanh(1.4)
+    rms = np.sqrt((mix ** 2).mean()) + 1e-9
+    mix = np.clip(mix * (10 ** (-16.5 / 20) / rms), -0.95, 0.95)   # 인스타 권장 음량(약 -14 LUFS)에 맞춤
 
     left = mix
-    right = np.concatenate([np.zeros(180), mix[:-180]])  # 살짝 넓은 스테레오
+    right = np.concatenate([np.zeros(150), mix[:-150]])
     pcm = (np.stack([left, right], axis=1) * 32767).astype("<i2")
     path.parent.mkdir(parents=True, exist_ok=True)
     with wave.open(str(path), "wb") as w:
@@ -319,7 +363,10 @@ def make(path: Path, duration: float, sections: list[tuple[float, str]], seed: i
 
 
 if __name__ == "__main__":
+    import sys
+
     secs = [(0, "hook"), (2.6, "rank3"), (6.0, "rank2"), (9.4, "rank1"), (12.8, "warn"),
             (16.0, "rest"), (26.4, "outro")]
-    make(Path("out/bgm_test.wav"), 29.4, secs, seed=5)
-    print("out/bgm_test.wav")
+    st = sys.argv[1] if len(sys.argv) > 1 else "trap"
+    make(Path(f"out/bgm_{st}.wav"), 29.4, secs, seed=5, style=st)
+    print(f"out/bgm_{st}.wav")

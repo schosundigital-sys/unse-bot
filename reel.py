@@ -46,6 +46,9 @@ MEDAL = {1: (232, 192, 96), 2: (196, 204, 216), 3: (204, 140, 92)}
 # 장면 길이(초)
 T_HOOK, T_RANK, T_WARN, T_PAGE, T_OUTRO = 2.6, 3.4, 3.2, 2.6, 3.0
 
+# 배경음 스타일: trap(다크 팝-트랩) | lofi(로파이 힙합)
+BGM_STYLE = os.getenv("BGM_STYLE", "trap")
+
 
 # ---------------- 그리기 도구 ----------------
 
@@ -394,7 +397,7 @@ def caption(d: date, info) -> str:
     return "\n".join(lines)
 
 
-def build(d: date) -> Path:
+def build(d: date, style: str = BGM_STYLE) -> Path:
     seed = d.toordinal()
     scenes, info = build_scenes(d, seed)
     out = ROOT / "out" / d.isoformat() / "reel"
@@ -406,7 +409,7 @@ def build(d: date) -> Path:
         t += sc.length
     total = t
     wav = bgm.make(out / "bgm.wav", total + 0.2,
-                   sections=[(s, sc.kind) for s, sc in zip(starts, scenes)], seed=seed)
+                   sections=[(s, sc.kind) for s, sc in zip(starts, scenes)], seed=seed, style=style)
 
     mp4 = out / "reel.mp4"
     cmd = [find_ffmpeg(), "-y", "-loglevel", "error",
@@ -450,9 +453,10 @@ def build(d: date) -> Path:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", help="운세 날짜 YYYY-MM-DD (기본: 오늘 KST)")
+    ap.add_argument("--style", default=BGM_STYLE, choices=list(bgm.STYLES), help="배경음 스타일")
     a = ap.parse_args()
     d = date.fromisoformat(a.date) if a.date else datetime.now(KST).date()
-    out = build(d)
+    out = build(d, a.style)
     gh_out = os.getenv("GITHUB_OUTPUT")
     if gh_out:
         with open(gh_out, "a", encoding="utf-8") as f:
